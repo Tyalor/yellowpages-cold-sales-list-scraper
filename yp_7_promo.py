@@ -1,5 +1,6 @@
 # Promotional Products/Print Shops Scraper
 # Pitch: "Custom quote builder with proof approval workflow"
+# FILTERS: Only businesses with real websites (no blank, localsearch, yellowpages URLs)
 # Copy this entire file into a Jupyter cell and run
 
 import time, re, random, os, json, hashlib
@@ -48,10 +49,9 @@ LOCATIONS = [
     "stamford-ct", "bridgeport-ct", "new-haven-ct", "hartford-ct", "norwalk-ct",
 ]
 
-# What to scrape (change these to continue from where you left off)
-CURRENT_TERM_INDEX = 0      # 0-10, which search term
-CURRENT_LOCATION_INDEX = 0  # 0-43, which location
-RUN_ALL = True              # True = run all terms/locations, False = just current index
+CURRENT_TERM_INDEX = 0
+CURRENT_LOCATION_INDEX = 0
+RUN_ALL = True
 
 OUTPUT_DIR = "exports_promo"
 MAX_PAGES = 5
@@ -67,6 +67,23 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
 ]
 EMAIL_BLACKLIST = ['example.com','domain.com','sentry.io','schema.org','wixpress','googleapis','yellowpages','.png','.jpg','.css','.js']
+
+# ============== WEBSITE FILTER ==============
+def is_valid_website(url):
+    """Filter out blank, localsearch, and yellowpages URLs - we only want real business websites"""
+    if not url or not url.strip():
+        return False
+    url_lower = url.lower().strip()
+    invalid_patterns = [
+        'localsearch.com',
+        'yellowpages.com',
+        'yp.com',
+        'superpages.com',
+        'whitepages.com',
+        'manta.com',
+        'yelp.com',
+    ]
+    return not any(pattern in url_lower for pattern in invalid_patterns)
 
 # ============== HELPERS ==============
 def ensure_dir():
@@ -103,7 +120,7 @@ def valid_email(e):
     return e and '@' in e and not any(x in e.lower() for x in EMAIL_BLACKLIST)
 
 def get_email_from_site(driver, url):
-    if not url: return ""
+    if not url or not is_valid_website(url): return ""
     try:
         if not url.startswith("http"): url = "https://" + url
         driver.set_page_load_timeout(15)
@@ -130,29 +147,32 @@ def get_email(driver, detail_url, website=""):
         time.sleep(random.uniform(LISTING_DELAY, LISTING_DELAY+2))
         driver.get(detail_url); time.sleep(2); src = driver.page_source
         if "blocked" in src.lower() or ("cloudflare" in src.lower() and "ray id" in src.lower()):
-            if website: return get_email_from_site(driver, website)
+            if website and is_valid_website(website): return get_email_from_site(driver, website)
             return "__BLOCKED__"
         driver.execute_script("window.scrollTo(0,800)"); time.sleep(1); src = driver.page_source
         m = re.search(r'href=["\']mailto:([^"\'<>?\s]+)', src, re.IGNORECASE)
         if m and valid_email(m.group(1)): return m.group(1).strip()
         for e in re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', src):
             if valid_email(e): return e
-        if website: return get_email_from_site(driver, website)
+        if website and is_valid_website(website): return get_email_from_site(driver, website)
     except: pass
     return ""
 
 def parse_listing(lst):
+    """Parse listing - returns None if no valid website (filtered out)"""
     try:
         nm = lst.select_one(".business-name span") or lst.select_one(".business-name")
         name = nm.text.strip() if nm else ""
         if not name: return None
+        web_el = lst.select_one(".track-visit-website")
+        web = web_el["href"] if web_el else ""
+        if not is_valid_website(web): return None
         ph = lst.select_one(".phones"); phone = ph.text.strip() if ph else ""
         st = lst.select_one(".street-address"); loc = lst.select_one(".locality")
         addr = " ".join(filter(None, [st.text.strip() if st else "", loc.text.strip() if loc else ""]))
-        web_el = lst.select_one(".track-visit-website"); web = web_el["href"] if web_el else ""
         det = lst.select_one(".business-name"); link = "https://www.yellowpages.com" + det["href"] if det and det.get("href") else ""
         cat = lst.select_one(".categories"); cats = cat.text.strip() if cat else ""
-        return {"#":None,"Company Name":name,"Niche":NICHE_LABEL,"Category":cats,"Has Website":"Yes" if web else "No",
+        return {"#":None,"Company Name":name,"Niche":NICHE_LABEL,"Category":cats,
                 "Email":"","Phone":phone,"Website":web,"Address":addr,"Date Added":datetime.now().strftime("%m/%d/%y"),
                 "Source":link,"Status":"","Notes":"","_id":gen_id(name,phone)}
     except: return None
@@ -171,7 +191,8 @@ def get_page_listings(driver):
 
 def save_xlsx(leads, path):
     if not leads: return
-    clean = [{k:v for k,v in l.items() if not k.startswith("_")} for l in leads]
+    clean = [{k:v for k,v in l.items() if not k.startswith("_")} for l in leads if is_valid_website(l.get("Website",""))]
+    if not clean: return
     for i,l in enumerate(clean,1): l["#"] = i
     df = pd.DataFrame(clean); df.to_excel(path, index=False)
     try:
@@ -194,9 +215,11 @@ def scrape(term, location, existing_ids):
     if os.path.exists(outfile):
         try:
             df = pd.read_excel(outfile); existing = df.to_dict('records')
+            existing = [l for l in existing if is_valid_website(l.get("Website",""))]
             for l in existing: l["_id"] = gen_id(l.get("Company Name",""), l.get("Phone",""))
         except: pass
     print(f"\n{'='*60}\n{NICHE_LABEL}: {term} @ {location}\n{'='*60}")
+    print(f"Filter: Only businesses with real websites (no blank/localsearch/yellowpages)")
     driver = create_driver(); leads = list(existing); local_ids = {l["_id"] for l in leads}; new_ct = 0; blocks = 0
     try:
         for pg in range(1, MAX_PAGES+1):
@@ -205,10 +228,10 @@ def scrape(term, location, existing_ids):
             try: driver.get(pg_url); time.sleep(2)
             except: continue
             listings = get_page_listings(driver)
-            if not listings: print("  No results"); break
+            if not listings: print("  No results with valid websites"); break
             new_lst = [l for l in listings if l["_id"] not in existing_ids and l["_id"] not in local_ids]
             for l in new_lst: local_ids.add(l["_id"])
-            print(f"  Found {len(listings)}, {len(new_lst)} new")
+            print(f"  Found {len(listings)} with real websites, {len(new_lst)} new")
             if not new_lst: continue
             if FETCH_EMAILS:
                 for i,l in enumerate(new_lst):
@@ -228,13 +251,14 @@ def scrape(term, location, existing_ids):
     finally:
         try: driver.quit()
         except: pass
-    print(f"Done: {new_ct} new, {len(leads)} total")
+    print(f"Done: {new_ct} new leads (all with real websites), {len(leads)} total")
     return leads, new_ct
 
 # ============== RUN ==============
 ensure_dir()
 all_ids = load_all_ids()
 print(f"Loaded {len(all_ids)} existing IDs")
+print(f"NOTE: Only scraping businesses with real websites (filtering out blank/localsearch/yellowpages URLs)\n")
 
 if RUN_ALL:
     total = 0
@@ -243,6 +267,6 @@ if RUN_ALL:
             _, n = scrape(term, loc, all_ids)
             total += n; all_ids = load_all_ids()
             time.sleep(random.uniform(15, 30))
-    print(f"\n{'='*60}\nALL DONE! {total} new leads\n{'='*60}")
+    print(f"\n{'='*60}\nALL DONE! {total} new leads (all with real websites)\n{'='*60}")
 else:
     scrape(SEARCH_TERMS[CURRENT_TERM_INDEX], LOCATIONS[CURRENT_LOCATION_INDEX], all_ids)
