@@ -2,10 +2,6 @@
 
 ## Web Developer → B2B Service Suppliers (Wholesale / Distribution)
 
-**01/20/26
-
-- we'll start with janitorial supply companies, say we've worked with clients from True Value & Imperial Dade
-  **
 
 
 **Target Niches**
