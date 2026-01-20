@@ -1,22 +1,24 @@
 """
-B2B Wholesaler/Warehouse Yellow Pages Scraper
-==============================================
-Target: B2B businesses that could benefit from custom NextJS web apps
-        for order management, invoicing, and inventory systems.
+B2B Service Suppliers Yellow Pages Scraper
+===========================================
+Target: B2B suppliers that need custom web apps for:
+- Online ordering portals with customer accounts
+- Custom quoting/proof approval workflows
+- Recurring order management
+- Large catalog management with tiered pricing
 
-Features:
-- Multiple search terms for comprehensive coverage
-- All NYC boroughs and industrial areas
-- Auto-resume capability (saves progress after each listing)
-- Built-in deduplication
-- Rotating user agents to avoid detection
-- Robust error handling with retries
-- Session management to avoid blocks
+Focused Niches:
+1. Janitorial/Cleaning Suppliers
+2. Industrial Safety Suppliers
+3. Promotional Products/Print Shops
+4. Uniform/Workwear Distributors
 
-Usage:
-1. Set MODE to control what to scrape (single, batch, or all)
-2. Run the script
-3. Use merge_all_files() at the end to combine results
+These businesses typically:
+- Serve other businesses (B2B)
+- Have complex pricing (volume tiers, customer-specific)
+- Need recurring order functionality
+- Often still use phone/fax/email for orders
+- Have budget for custom solutions
 """
 
 import time
@@ -43,163 +45,183 @@ from openpyxl.worksheet.datavalidation import DataValidation
 # ============================================================================
 
 # === MODE: Choose how to run ===
-# "single"    - Run one search term + one location (set CURRENT_SEARCH_INDEX & CURRENT_LOCATION_INDEX)
-# "batch"     - Run one search term across ALL locations
-# "all"       - Run ALL search terms across ALL locations (comprehensive but slow)
-# "resume"    - Resume from saved progress file
+# "single"    - Run one search term + one location
+# "niche"     - Run one NICHE (all its search terms) across all locations
+# "all"       - Run everything (comprehensive)
 MODE = "single"
 
-# === B2B WHOLESALER/WAREHOUSE SEARCH TERMS ===
-# These businesses typically need order management, invoicing, inventory software
-SEARCHES = [
-    # Core wholesale/distribution
-    {"term": "wholesale", "label": "Wholesale"},
-    {"term": "wholesalers", "label": "Wholesaler"},
-    {"term": "wholesale-distributors", "label": "Wholesale Distributor"},
-    {"term": "distributors", "label": "Distributor"},
-    {"term": "distribution-services", "label": "Distribution Services"},
+# === FOCUSED B2B NICHES ===
+# Each niche has multiple search terms to maximize coverage
 
-    # Warehousing
-    {"term": "warehouses", "label": "Warehouse"},
-    {"term": "warehouse-storage", "label": "Warehouse Storage"},
-    {"term": "warehousing", "label": "Warehousing"},
-    {"term": "public-warehouses", "label": "Public Warehouse"},
-    {"term": "cold-storage", "label": "Cold Storage"},
+NICHES = {
+    "janitorial": {
+        "label": "Janitorial/Cleaning Supplier",
+        "terms": [
+            "janitorial-supplies",
+            "janitorial-equipment-supplies",
+            "cleaning-supplies",
+            "cleaning-equipment-supplies",
+            "sanitation-supplies",
+            "paper-products-wholesale",
+            "commercial-cleaning-supplies",
+            "floor-care-supplies",
+            "restroom-supplies",
+        ],
+        "pitch": "Online ordering portal for recurring cleaning supply orders"
+    },
+    "safety": {
+        "label": "Industrial Safety Supplier",
+        "terms": [
+            "safety-equipment-supplies",
+            "industrial-safety-equipment",
+            "personal-protective-equipment",
+            "ppe-supplies",
+            "industrial-supplies",
+            "welding-supplies",
+            "industrial-equipment-supplies",
+            "fire-protection-equipment",
+            "first-aid-supplies",
+        ],
+        "pitch": "B2B catalog with compliance docs and account pricing"
+    },
+    "promo": {
+        "label": "Promotional Products/Print",
+        "terms": [
+            "promotional-products",
+            "advertising-specialties",
+            "screen-printing",
+            "custom-printing",
+            "printing-services-commercial",
+            "signs",
+            "banners",
+            "trophies-awards",
+            "embroidery",
+            "business-forms",
+            "custom-t-shirts",
+        ],
+        "pitch": "Custom quote builder with proof approval workflow"
+    },
+    "uniforms": {
+        "label": "Uniform/Workwear Distributor",
+        "terms": [
+            "uniforms",
+            "uniform-supply",
+            "work-clothing",
+            "corporate-apparel",
+            "industrial-uniforms",
+            "medical-scrubs",
+            "restaurant-uniforms",
+            "embroidery-services",
+            "work-boots-shoes",
+            "safety-clothing",
+        ],
+        "pitch": "Company accounts with logo/embroidery options and reordering"
+    },
+}
 
-    # Import/Export (often need customs & invoicing)
-    {"term": "importers", "label": "Importer"},
-    {"term": "exporters", "label": "Exporter"},
-    {"term": "import-export", "label": "Import/Export"},
-    {"term": "freight-forwarding", "label": "Freight Forwarding"},
-    {"term": "customs-brokers", "label": "Customs Broker"},
+# === CURRENT SELECTION ===
+# For "single" mode: set both niche and term index
+# For "niche" mode: set just the niche key
+CURRENT_NICHE = "janitorial"  # Options: janitorial, safety, promo, uniforms
+CURRENT_TERM_INDEX = 0        # Which term within the niche (for single mode)
+CURRENT_LOCATION_INDEX = 0    # Which location (for single mode)
 
-    # Manufacturing & Industrial (need order systems)
-    {"term": "manufacturers", "label": "Manufacturer"},
-    {"term": "manufacturing", "label": "Manufacturing"},
-    {"term": "industrial-equipment", "label": "Industrial Equipment"},
-    {"term": "packaging-materials-equipment", "label": "Packaging"},
-
-    # Food/Beverage Wholesale (high volume, need invoicing)
-    {"term": "food-brokers", "label": "Food Broker"},
-    {"term": "food-products-wholesale", "label": "Food Wholesale"},
-    {"term": "beverage-distributors", "label": "Beverage Distributor"},
-    {"term": "grocery-wholesale", "label": "Grocery Wholesale"},
-    {"term": "meat-wholesale", "label": "Meat Wholesale"},
-    {"term": "produce-wholesale", "label": "Produce Wholesale"},
-    {"term": "seafood-wholesale", "label": "Seafood Wholesale"},
-
-    # Building/Construction Supplies (B2B heavy)
-    {"term": "building-materials", "label": "Building Materials"},
-    {"term": "lumber-wholesale", "label": "Lumber Wholesale"},
-    {"term": "plumbing-supplies-wholesale", "label": "Plumbing Supplies"},
-    {"term": "electrical-supplies-wholesale", "label": "Electrical Supplies"},
-    {"term": "hardware-wholesale", "label": "Hardware Wholesale"},
-
-    # Other B2B
-    {"term": "paper-products-wholesale", "label": "Paper Products"},
-    {"term": "janitorial-supplies", "label": "Janitorial Supplies"},
-    {"term": "restaurant-equipment-supplies", "label": "Restaurant Equipment"},
-    {"term": "beauty-supplies-wholesale", "label": "Beauty Supplies"},
-    {"term": "clothing-wholesale", "label": "Clothing Wholesale"},
-    {"term": "auto-parts-wholesale", "label": "Auto Parts Wholesale"},
-    {"term": "electronics-wholesale", "label": "Electronics Wholesale"},
-    {"term": "medical-equipment-supplies", "label": "Medical Supplies"},
-    {"term": "office-supplies-wholesale", "label": "Office Supplies"},
-
-    # Logistics (often need custom software)
-    {"term": "logistics", "label": "Logistics"},
-    {"term": "fulfillment-services", "label": "Fulfillment Services"},
-    {"term": "third-party-logistics", "label": "3PL"},
-    {"term": "supply-chain", "label": "Supply Chain"},
-]
-
-# === NYC LOCATIONS ===
-# Comprehensive coverage of NYC boroughs and industrial/commercial areas
+# === LOCATIONS ===
+# Focused on tri-state area + expanded to other industrial regions
+# These businesses exist everywhere, not just Manhattan
 LOCATIONS = [
-    # Main boroughs
+    # NYC Boroughs (industrial areas)
     "queens-ny",
     "brooklyn-ny",
     "bronx-ny",
-    "manhattan-ny",
     "staten-island-ny",
 
-    # Queens industrial/commercial areas
+    # Queens industrial
     "long-island-city-ny",
     "maspeth-ny",
     "jamaica-ny",
-    "flushing-ny",
-    "astoria-ny",
-    "woodside-ny",
-    "ridgewood-ny",
     "college-point-ny",
-    "ozone-park-ny",
 
-    # Brooklyn industrial areas
+    # Brooklyn industrial
     "sunset-park-brooklyn-ny",
     "red-hook-brooklyn-ny",
-    "bushwick-brooklyn-ny",
     "east-new-york-brooklyn-ny",
-    "greenpoint-brooklyn-ny",
-    "williamsburg-brooklyn-ny",
-    "industry-city-brooklyn-ny",
-    "brooklyn-navy-yard-ny",
-    "canarsie-brooklyn-ny",
 
-    # Bronx industrial areas
+    # Bronx industrial
     "hunts-point-bronx-ny",
     "port-morris-bronx-ny",
-    "mott-haven-bronx-ny",
     "south-bronx-ny",
-    "fordham-bronx-ny",
 
-    # Manhattan commercial
-    "chelsea-ny",
-    "tribeca-ny",
-    "lower-manhattan-ny",
-    "garment-district-ny",
-    "meatpacking-district-ny",
+    # Long Island (lots of suppliers here)
+    "long-island-ny",
+    "nassau-county-ny",
+    "suffolk-county-ny",
+    "hauppauge-ny",
+    "farmingdale-ny",
+    "hicksville-ny",
+    "westbury-ny",
 
-    # Nearby NJ (many warehouses serve NYC)
-    "jersey-city-nj",
+    # Westchester/Hudson Valley
+    "westchester-county-ny",
+    "yonkers-ny",
+    "white-plains-ny",
+    "mount-vernon-ny",
+
+    # New Jersey (huge industrial base)
     "newark-nj",
+    "jersey-city-nj",
     "elizabeth-nj",
+    "edison-nj",
+    "paterson-nj",
+    "clifton-nj",
+    "passaic-nj",
+    "union-nj",
     "secaucus-nj",
     "kearny-nj",
+    "linden-nj",
+    "perth-amboy-nj",
+    "new-brunswick-nj",
+    "middlesex-county-nj",
+    "bergen-county-nj",
+    "essex-county-nj",
+    "hudson-county-nj",
+
+    # Connecticut
+    "stamford-ct",
+    "bridgeport-ct",
+    "new-haven-ct",
+    "hartford-ct",
+    "waterbury-ct",
+    "norwalk-ct",
+    "fairfield-county-ct",
 ]
 
-# === CURRENT SELECTION (for "single" mode) ===
-CURRENT_SEARCH_INDEX = 0      # Which search term to use
-CURRENT_LOCATION_INDEX = 0    # Which location to use
-
 # === PAGINATION ===
-# Yellow Pages typically shows 30 results per page, max ~3-4 pages per search
-# We iterate through all pages until no results
 START_PAGE = 1
-MAX_PAGES = 10  # Safety limit (YP usually stops at 3-4)
+MAX_PAGES = 5  # Most searches won't have more than this
 
 # === OUTPUT ===
-OUTPUT_DIR = "exports_b2b_warehouse"
-PROGRESS_FILE = "scrape_progress.json"  # For resume capability
+OUTPUT_DIR = "exports_b2b_suppliers"
+PROGRESS_FILE = "scrape_progress.json"
 
 # === SCRAPING SETTINGS ===
-FETCH_EMAILS = True           # Set False for faster scraping (no emails)
-DEBUG = False                 # Save debug HTML files
-HEADLESS = False              # False = visible browser (bypasses Cloudflare better)
-MIN_DELAY = 4                 # Min seconds between requests
-MAX_DELAY = 8                 # Max seconds between requests
-PAGE_DELAY = 12               # Seconds between pages
-LISTING_DELAY = 3             # Seconds between listing detail fetches
-RESTART_DRIVER_EACH_PAGE = True  # Fresh session each page
-MAX_RETRIES = 3               # Retries on failure
+FETCH_EMAILS = True
+DEBUG = False
+HEADLESS = False
+MIN_DELAY = 4
+MAX_DELAY = 8
+PAGE_DELAY = 12
+LISTING_DELAY = 3
+RESTART_DRIVER_EACH_PAGE = True
+MAX_RETRIES = 3
 
-# === USER AGENTS (rotated to avoid detection) ===
+# === USER AGENTS ===
 USER_AGENTS = [
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0",
 ]
 
 # ============================================================================
@@ -207,30 +229,26 @@ USER_AGENTS = [
 # ============================================================================
 
 def ensure_output_dir():
-    """Create output directory if it doesn't exist"""
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
         print(f"Created output directory: {OUTPUT_DIR}")
 
 
-def get_output_filename(search_term, location):
-    """Generate output filename for a search/location combo"""
-    return os.path.join(OUTPUT_DIR, f"yp_b2b_{location}_{search_term}.xlsx")
+def get_output_filename(niche_key, search_term, location):
+    return os.path.join(OUTPUT_DIR, f"yp_{niche_key}_{location}_{search_term}.xlsx")
 
 
 def generate_lead_id(company_name, phone):
-    """Generate unique ID for deduplication"""
     key = f"{company_name.lower().strip()}|{phone.strip()}"
     return hashlib.md5(key.encode()).hexdigest()[:12]
 
 
 def load_existing_leads(filepath):
-    """Load existing leads from Excel file for deduplication"""
     if os.path.exists(filepath):
         try:
             df = pd.read_excel(filepath)
             return set(
-                generate_lead_id(row["Company Name"], row.get("Phone Number", ""))
+                generate_lead_id(str(row.get("Company Name", "")), str(row.get("Phone Number", "")))
                 for _, row in df.iterrows()
             )
         except:
@@ -239,31 +257,29 @@ def load_existing_leads(filepath):
 
 
 def load_all_existing_lead_ids():
-    """Load all lead IDs from all existing files for global deduplication"""
     all_ids = set()
     if os.path.exists(OUTPUT_DIR):
         for filename in os.listdir(OUTPUT_DIR):
             if filename.endswith(".xlsx"):
                 filepath = os.path.join(OUTPUT_DIR, filename)
                 all_ids.update(load_existing_leads(filepath))
+    print(f"Loaded {len(all_ids)} existing lead IDs for deduplication")
     return all_ids
 
 
-def save_progress(search_idx, location_idx, page, status="in_progress"):
-    """Save scraping progress for resume capability"""
+def save_progress(niche, term_idx, location_idx, status="in_progress"):
     progress = {
-        "search_index": search_idx,
+        "niche": niche,
+        "term_index": term_idx,
         "location_index": location_idx,
-        "page": page,
         "status": status,
         "timestamp": datetime.now().isoformat()
     }
     with open(PROGRESS_FILE, "w") as f:
-        json.dump(progress, f)
+        json.dump(progress, f, indent=2)
 
 
 def load_progress():
-    """Load saved progress"""
     if os.path.exists(PROGRESS_FILE):
         with open(PROGRESS_FILE, "r") as f:
             return json.load(f)
@@ -271,7 +287,6 @@ def load_progress():
 
 
 def create_driver():
-    """Create Selenium WebDriver with anti-detection settings"""
     options = Options()
 
     if HEADLESS:
@@ -283,7 +298,6 @@ def create_driver():
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-blink-features=AutomationControlled")
 
-    # Random user agent
     user_agent = random.choice(USER_AGENTS)
     options.add_argument(f"user-agent={user_agent}")
 
@@ -297,7 +311,6 @@ def create_driver():
 
 
 def random_delay(min_sec=None, max_sec=None):
-    """Human-like random delay"""
     min_sec = min_sec or MIN_DELAY
     max_sec = max_sec or MAX_DELAY
     delay = random.uniform(min_sec, max_sec)
@@ -309,19 +322,17 @@ def random_delay(min_sec=None, max_sec=None):
 #                           EMAIL EXTRACTION
 # ============================================================================
 
-# Email false positive filter
 EMAIL_BLACKLIST = [
     'example.com', 'domain.com', 'email.com', 'yoursite', 'yourdomain',
     'sentry.io', 'schema.org', 'json', 'wixpress', 'wix.com',
     'googleapis', 'google.com', 'facebook', 'twitter', 'instagram',
     '.png', '.jpg', '.gif', '.svg', '.css', '.js',
     'yellowpages', 'yp.com', 'placeholder', 'test.com',
-    'wordpress', 'squarespace', 'shopify', 'godaddy'
+    'wordpress', 'squarespace', 'shopify', 'godaddy', 'wufoo'
 ]
 
 
 def is_valid_email(email):
-    """Check if email is likely valid (not a false positive)"""
     if not email or '@' not in email:
         return False
     email_lower = email.lower()
@@ -329,12 +340,10 @@ def is_valid_email(email):
 
 
 def extract_email_from_website(driver, website_url, timeout=15):
-    """Extract email from company's own website"""
     if not website_url or website_url == "N/A":
         return ""
 
     try:
-        # Clean up URL
         if not website_url.startswith("http"):
             website_url = "https://" + website_url
 
@@ -349,24 +358,23 @@ def extract_email_from_website(driver, website_url, timeout=15):
         time.sleep(2)
         page_source = driver.page_source
 
-        # Check for error pages
         if any(x in driver.title.lower() for x in ["404", "not found", "error", "denied"]):
             return ""
 
-        # Method 1: Find mailto links
+        # Method 1: Mailto links
         mailto_match = re.search(r'href=["\']mailto:([^"\'<>?\s]+)', page_source, re.IGNORECASE)
         if mailto_match:
             email = mailto_match.group(1).strip()
             if is_valid_email(email):
                 return email
 
-        # Method 2: Find email patterns in page
+        # Method 2: Email patterns
         email_matches = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', page_source)
         for email in email_matches:
             if is_valid_email(email):
                 return email
 
-        # Method 3: Try contact pages
+        # Method 3: Contact pages
         base_url = website_url.rstrip('/')
         contact_paths = ['/contact', '/contact-us', '/about', '/about-us', '/contactus']
 
@@ -397,12 +405,10 @@ def extract_email_from_website(driver, website_url, timeout=15):
 
 
 def extract_email_from_detail(driver, detail_url, website_url="", debug_save=False):
-    """Extract email from Yellow Pages detail page, fallback to company website"""
     try:
         random_delay(LISTING_DELAY, LISTING_DELAY + 2)
         driver.get(detail_url)
 
-        # Wait for page load
         try:
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, ".business-info, .sales-info, #main-content, #cf-wrapper"))
@@ -413,7 +419,6 @@ def extract_email_from_detail(driver, detail_url, website_url="", debug_save=Fal
         time.sleep(2)
         page_source = driver.page_source
 
-        # Check for Cloudflare block
         is_blocked = (
             "you have been blocked" in page_source.lower() or
             ("cloudflare" in page_source.lower() and "ray id" in page_source.lower())
@@ -421,30 +426,28 @@ def extract_email_from_detail(driver, detail_url, website_url="", debug_save=Fal
 
         if is_blocked:
             if website_url:
-                print(" [YP blocked, trying website]", end="")
+                print(" [blocked, trying website]", end="")
                 email = extract_email_from_website(driver, website_url)
                 if email:
                     return email
             return "__BLOCKED__"
 
-        # Debug save
         if debug_save:
-            with open(os.path.join(OUTPUT_DIR, "debug_page_source.html"), "w", encoding="utf-8") as f:
+            with open(os.path.join(OUTPUT_DIR, "debug_page.html"), "w", encoding="utf-8") as f:
                 f.write(page_source)
 
-        # Scroll to load lazy content
         driver.execute_script("window.scrollTo(0, 800);")
         time.sleep(1)
         page_source = driver.page_source
 
-        # Method 1: Mailto links in page source
+        # Method 1: Mailto in source
         mailto_match = re.search(r'href=["\']mailto:([^"\'<>?\s]+)', page_source, re.IGNORECASE)
         if mailto_match:
             email = mailto_match.group(1).strip()
             if is_valid_email(email):
                 return email
 
-        # Method 2: Selenium - email-business link
+        # Method 2: Email link elements
         try:
             email_elements = driver.find_elements(By.CSS_SELECTOR, "a.email-business, a[class*='email']")
             for el in email_elements:
@@ -456,7 +459,7 @@ def extract_email_from_detail(driver, detail_url, website_url="", debug_save=Fal
         except:
             pass
 
-        # Method 3: Any mailto link
+        # Method 3: Any mailto
         try:
             mailto_links = driver.find_elements(By.CSS_SELECTOR, "a[href*='mailto:']")
             for link in mailto_links:
@@ -477,13 +480,13 @@ def extract_email_from_detail(driver, detail_url, website_url="", debug_save=Fal
                 if is_valid_email(email):
                     return email
 
-        # Method 5: Regex search
+        # Method 5: Regex
         email_matches = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', page_source)
         for email in email_matches:
             if is_valid_email(email):
                 return email
 
-        # Fallback: Try company website
+        # Fallback: Company website
         if website_url:
             print(" [trying website]", end="")
             email = extract_email_from_website(driver, website_url)
@@ -501,10 +504,8 @@ def extract_email_from_detail(driver, detail_url, website_url="", debug_save=Fal
 #                           LISTING PARSING
 # ============================================================================
 
-def parse_listing(listing, industry_label):
-    """Parse a single listing into a lead dict"""
+def parse_listing(listing, niche_label):
     try:
-        # Company name
         name_el = listing.select_one(".business-name span")
         if not name_el:
             name_el = listing.select_one(".business-name")
@@ -513,11 +514,9 @@ def parse_listing(listing, industry_label):
         if not company:
             return None
 
-        # Phone
         phone_el = listing.select_one(".phones")
         phone = phone_el.text.strip() if phone_el else ""
 
-        # Address
         street = listing.select_one(".street-address")
         locality = listing.select_one(".locality")
         address = " ".join(filter(None, [
@@ -525,37 +524,36 @@ def parse_listing(listing, industry_label):
             locality.text.strip() if locality else ""
         ]))
 
-        # Website
         website_el = listing.select_one(".track-visit-website")
         website = website_el["href"] if website_el else ""
 
-        # Detail link
         detail_el = listing.select_one(".business-name")
         detail_link = ""
         if detail_el and detail_el.get("href"):
             detail_link = "https://www.yellowpages.com" + detail_el["href"]
 
-        # Categories/services (useful context)
         categories_el = listing.select_one(".categories")
         categories = categories_el.text.strip() if categories_el else ""
+
+        # Check if they have a website (important for qualifying leads)
+        has_website = "Yes" if website else "No"
 
         return {
             "#": None,
             "Company Name": company,
-            "Industry": industry_label,
+            "Niche": niche_label,
             "Category": categories,
+            "Has Website": has_website,
             "Contact Name": "",
             "Email Address": "",
             "Phone Number": phone,
             "Website URL": website,
             "Address": address,
-            "Date Added": datetime.now().strftime("%-m/%-d/%y"),
+            "Date Added": datetime.now().strftime("%m/%d/%y"),
             "Date Contacted": "",
             "Source": detail_link,
             "Notes": "",
-            "Called": "",
-            "Followed Up": "",
-            "Closed": "",
+            "Status": "",
             "_lead_id": generate_lead_id(company, phone)
         }
     except Exception as e:
@@ -564,9 +562,7 @@ def parse_listing(listing, industry_label):
         return None
 
 
-def get_listings_from_page(driver, industry_label):
-    """Extract all listings from current search results page"""
-    # Scroll to load all content
+def get_listings_from_page(driver, niche_label):
     driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
     time.sleep(2)
 
@@ -584,7 +580,7 @@ def get_listings_from_page(driver, industry_label):
         try:
             html = listing.get_attribute("outerHTML")
             soup = BeautifulSoup(html, "html.parser")
-            parsed = parse_listing(soup, industry_label)
+            parsed = parse_listing(soup, niche_label)
             if parsed:
                 page_data.append(parsed)
         except:
@@ -598,42 +594,42 @@ def get_listings_from_page(driver, industry_label):
 # ============================================================================
 
 def add_checkboxes(filepath):
-    """Add checkbox dropdowns to tracking columns"""
     try:
         wb = load_workbook(filepath)
         ws = wb.active
 
-        checkbox_validation = DataValidation(type="list", formula1='"☐,☑"', allow_blank=True)
-        ws.add_data_validation(checkbox_validation)
+        # Status dropdown
+        status_validation = DataValidation(
+            type="list",
+            formula1='"Not Contacted,Contacted,Interested,Not Interested,Closed Won,Closed Lost"',
+            allow_blank=True
+        )
+        ws.add_data_validation(status_validation)
 
         headers = {cell.value: cell.column for cell in ws[1]}
 
-        for col_name in ["Called", "Followed Up", "Closed"]:
-            if col_name in headers:
-                col_idx = headers[col_name]
-                for row in range(2, ws.max_row + 1):
-                    cell = ws.cell(row=row, column=col_idx)
-                    if not cell.value:
-                        cell.value = "☐"
-                    checkbox_validation.add(cell)
+        if "Status" in headers:
+            col_idx = headers["Status"]
+            for row in range(2, ws.max_row + 1):
+                cell = ws.cell(row=row, column=col_idx)
+                if not cell.value:
+                    cell.value = "Not Contacted"
+                status_validation.add(cell)
 
         wb.save(filepath)
     except Exception as e:
-        print(f"  Warning: Could not add checkboxes: {e}")
+        print(f"  Warning: Could not add dropdowns: {e}")
 
 
 def save_leads_to_excel(leads, filepath):
-    """Save leads to Excel with proper formatting"""
     if not leads:
         return
 
-    # Remove internal _lead_id column for output
     clean_leads = []
     for lead in leads:
         clean_lead = {k: v for k, v in lead.items() if not k.startswith("_")}
         clean_leads.append(clean_lead)
 
-    # Renumber
     for i, lead in enumerate(clean_leads, 1):
         lead["#"] = i
 
@@ -646,13 +642,12 @@ def save_leads_to_excel(leads, filepath):
 #                           MAIN SCRAPER
 # ============================================================================
 
-def scrape_search(search_term, search_label, location, existing_ids=None):
-    """Scrape a single search term + location combination"""
+def scrape_search(niche_key, search_term, niche_label, location, existing_ids=None):
     existing_ids = existing_ids or set()
     base_url = f"https://www.yellowpages.com/{location}/{search_term}"
-    output_file = get_output_filename(search_term, location)
+    output_file = get_output_filename(niche_key, search_term, location)
 
-    # Load any existing leads for this file
+    # Load existing
     existing_file_leads = []
     if os.path.exists(output_file):
         try:
@@ -660,19 +655,18 @@ def scrape_search(search_term, search_label, location, existing_ids=None):
             existing_file_leads = df.to_dict('records')
             for lead in existing_file_leads:
                 lead["_lead_id"] = generate_lead_id(
-                    lead.get("Company Name", ""),
-                    lead.get("Phone Number", "")
+                    str(lead.get("Company Name", "")),
+                    str(lead.get("Phone Number", ""))
                 )
         except:
             pass
 
     print(f"\n{'='*70}")
-    print(f"SCRAPING: {search_label}")
+    print(f"SCRAPING: {niche_label}")
+    print(f"Search Term: {search_term}")
     print(f"Location: {location}")
     print(f"URL: {base_url}")
-    print(f"Output: {output_file}")
-    print(f"Existing leads in file: {len(existing_file_leads)}")
-    print(f"Global dedup pool: {len(existing_ids)} IDs")
+    print(f"Existing in file: {len(existing_file_leads)}")
     print(f"{'='*70}\n")
 
     driver = create_driver()
@@ -697,17 +691,16 @@ def scrape_search(search_term, search_label, location, existing_ids=None):
                         print(f"  Retry {attempt + 1}...")
                         time.sleep(5)
                     else:
-                        print(f"  Failed to load page: {e}")
+                        print(f"  Failed: {e}")
                         continue
 
-            # Get listings
-            page_listings = get_listings_from_page(driver, search_label)
+            page_listings = get_listings_from_page(driver, niche_label)
 
             if not page_listings:
-                print(f"  No listings found - end of results")
+                print(f"  No listings - end of results")
                 break
 
-            # Filter duplicates
+            # Filter dupes
             new_listings = []
             for listing in page_listings:
                 lead_id = listing["_lead_id"]
@@ -718,18 +711,16 @@ def scrape_search(search_term, search_label, location, existing_ids=None):
             print(f"  Found {len(page_listings)} listings, {len(new_listings)} new")
 
             if not new_listings:
-                print(f"  All duplicates - skipping page")
+                print(f"  All duplicates - skipping")
                 if page < MAX_PAGES:
-                    delay = random.uniform(PAGE_DELAY/2, PAGE_DELAY)
-                    print(f"  Waiting {delay:.1f}s...")
-                    time.sleep(delay)
+                    time.sleep(random.uniform(PAGE_DELAY/2, PAGE_DELAY))
                 continue
 
-            # Fetch emails for new listings
+            # Fetch emails
             if FETCH_EMAILS:
                 emails_found = 0
                 for i, lead in enumerate(new_listings):
-                    company_short = lead['Company Name'][:40].ljust(40)
+                    company_short = lead['Company Name'][:38].ljust(38)
                     print(f"  [{i+1:2}/{len(new_listings)}] {company_short}", end="", flush=True)
 
                     email = extract_email_from_detail(
@@ -743,7 +734,7 @@ def scrape_search(search_term, search_label, location, existing_ids=None):
                         print(f" -> BLOCKED")
                         blocked_count += 1
                         if blocked_count >= 5:
-                            print("\n  Too many blocks - restarting browser...")
+                            print("\n  Too many blocks - restarting...")
                             try:
                                 driver.quit()
                             except:
@@ -758,17 +749,15 @@ def scrape_search(search_term, search_label, location, existing_ids=None):
                     else:
                         print(f" -> (no email)")
 
-                print(f"\n  Page {page}: {emails_found}/{len(new_listings)} emails found")
+                print(f"\n  Page {page}: {emails_found}/{len(new_listings)} emails")
 
-            # Add to results
             all_leads.extend(new_listings)
             new_leads_count += len(new_listings)
 
             # Save progress
             save_leads_to_excel(all_leads, output_file)
-            print(f"  Saved {len(all_leads)} total leads to {output_file}")
+            print(f"  Saved {len(all_leads)} leads to {output_file}")
 
-            # Delay before next page
             if page < MAX_PAGES:
                 if RESTART_DRIVER_EACH_PAGE:
                     print(f"  Restarting browser...")
@@ -780,15 +769,13 @@ def scrape_search(search_term, search_label, location, existing_ids=None):
                     driver = create_driver()
 
                 delay = random.uniform(PAGE_DELAY, PAGE_DELAY + 5)
-                print(f"  Waiting {delay:.1f}s before next page...\n")
+                print(f"  Waiting {delay:.1f}s...\n")
                 time.sleep(delay)
 
     except Exception as e:
         print(f"\nError: {e}")
-        # Save what we have
         if all_leads:
             save_leads_to_excel(all_leads, output_file)
-            print(f"Saved {len(all_leads)} leads before error")
 
     finally:
         try:
@@ -796,154 +783,129 @@ def scrape_search(search_term, search_label, location, existing_ids=None):
         except:
             pass
 
-    # Final summary
     email_count = sum(1 for lead in all_leads if lead.get("Email Address"))
+    website_count = sum(1 for lead in all_leads if lead.get("Has Website") == "Yes")
+
     print(f"\n{'='*70}")
-    print(f"COMPLETED: {search_label} in {location}")
-    print(f"New leads this run: {new_leads_count}")
-    print(f"Total leads in file: {len(all_leads)}")
+    print(f"COMPLETED: {search_term} in {location}")
+    print(f"New leads: {new_leads_count}")
+    print(f"Total in file: {len(all_leads)}")
     print(f"With emails: {email_count}")
+    print(f"With websites: {website_count}")
     print(f"{'='*70}")
 
     return all_leads, new_leads_count
 
 
+# ============================================================================
+#                           RUN MODES
+# ============================================================================
+
 def run_single_search():
     """Run a single search term + location"""
     ensure_output_dir()
 
-    search = SEARCHES[CURRENT_SEARCH_INDEX]
+    niche = NICHES[CURRENT_NICHE]
+    term = niche["terms"][CURRENT_TERM_INDEX]
     location = LOCATIONS[CURRENT_LOCATION_INDEX]
 
     print(f"\nMODE: Single Search")
-    print(f"Search: {search['term']} ({search['label']})")
+    print(f"Niche: {niche['label']}")
+    print(f"Term: {term}")
     print(f"Location: {location}")
+    print(f"Pitch: {niche['pitch']}")
 
     existing_ids = load_all_existing_lead_ids()
-    scrape_search(search["term"], search["label"], location, existing_ids)
+    scrape_search(CURRENT_NICHE, term, niche["label"], location, existing_ids)
 
 
-def run_batch_search():
-    """Run one search term across all locations"""
+def run_niche_search():
+    """Run all terms for one niche across all locations"""
     ensure_output_dir()
 
-    search = SEARCHES[CURRENT_SEARCH_INDEX]
+    niche_key = CURRENT_NICHE
+    niche = NICHES[niche_key]
 
-    print(f"\nMODE: Batch Search (all locations)")
-    print(f"Search: {search['term']} ({search['label']})")
+    print(f"\nMODE: Full Niche Search")
+    print(f"Niche: {niche['label']}")
+    print(f"Terms: {len(niche['terms'])}")
     print(f"Locations: {len(LOCATIONS)}")
+    print(f"Total combinations: {len(niche['terms']) * len(LOCATIONS)}")
+    print(f"Pitch: {niche['pitch']}")
 
     total_new = 0
     existing_ids = load_all_existing_lead_ids()
+    combo = 0
+    total = len(niche['terms']) * len(LOCATIONS)
 
-    for i, location in enumerate(LOCATIONS):
-        print(f"\n>>> Location {i+1}/{len(LOCATIONS)}: {location}")
-        save_progress(CURRENT_SEARCH_INDEX, i, 0)
-
-        _, new_count = scrape_search(search["term"], search["label"], location, existing_ids)
-        total_new += new_count
-
-        # Update global dedup pool
-        existing_ids = load_all_existing_lead_ids()
-
-        # Long delay between locations
-        if i < len(LOCATIONS) - 1:
-            delay = random.uniform(30, 60)
-            print(f"\nWaiting {delay:.0f}s before next location...\n")
-            time.sleep(delay)
-
-    save_progress(CURRENT_SEARCH_INDEX, len(LOCATIONS) - 1, 0, "completed")
-    print(f"\n{'='*70}")
-    print(f"BATCH COMPLETE!")
-    print(f"Total new leads: {total_new}")
-    print(f"{'='*70}")
-
-
-def run_all_searches():
-    """Run ALL search terms across ALL locations (comprehensive)"""
-    ensure_output_dir()
-
-    print(f"\nMODE: Full Scrape (all searches x all locations)")
-    print(f"Searches: {len(SEARCHES)}")
-    print(f"Locations: {len(LOCATIONS)}")
-    print(f"Total combinations: {len(SEARCHES) * len(LOCATIONS)}")
-
-    total_new = 0
-    existing_ids = load_all_existing_lead_ids()
-    combo_count = 0
-    total_combos = len(SEARCHES) * len(LOCATIONS)
-
-    for si, search in enumerate(SEARCHES):
+    for ti, term in enumerate(niche['terms']):
         for li, location in enumerate(LOCATIONS):
-            combo_count += 1
-            print(f"\n>>> Combo {combo_count}/{total_combos}: {search['term']} @ {location}")
-            save_progress(si, li, 0)
+            combo += 1
+            print(f"\n>>> [{combo}/{total}] {term} @ {location}")
+            save_progress(niche_key, ti, li)
 
-            _, new_count = scrape_search(search["term"], search["label"], location, existing_ids)
+            _, new_count = scrape_search(niche_key, term, niche["label"], location, existing_ids)
             total_new += new_count
-
-            # Update global dedup pool
             existing_ids = load_all_existing_lead_ids()
 
-            # Delay between combos
-            if combo_count < total_combos:
+            if combo < total:
                 delay = random.uniform(20, 40)
-                print(f"\nWaiting {delay:.0f}s before next combo...\n")
+                print(f"\nWaiting {delay:.0f}s...\n")
                 time.sleep(delay)
 
-    save_progress(len(SEARCHES) - 1, len(LOCATIONS) - 1, 0, "completed")
+    save_progress(niche_key, len(niche['terms'])-1, len(LOCATIONS)-1, "completed")
     print(f"\n{'='*70}")
-    print(f"FULL SCRAPE COMPLETE!")
+    print(f"NICHE COMPLETE: {niche['label']}")
     print(f"Total new leads: {total_new}")
     print(f"{'='*70}")
 
 
-def resume_scrape():
-    """Resume from saved progress"""
-    progress = load_progress()
+def run_all_niches():
+    """Run everything"""
+    ensure_output_dir()
 
-    if not progress:
-        print("No saved progress found. Starting fresh.")
-        run_all_searches()
-        return
+    total_combos = sum(len(n['terms']) * len(LOCATIONS) for n in NICHES.values())
 
-    print(f"\nResuming from:")
-    print(f"  Search: {SEARCHES[progress['search_index']]['term']}")
-    print(f"  Location: {LOCATIONS[progress['location_index']]}")
+    print(f"\nMODE: Full Scrape (all niches)")
+    print(f"Niches: {len(NICHES)}")
+    print(f"Total combinations: {total_combos}")
 
-    existing_ids = load_all_existing_lead_ids()
     total_new = 0
+    existing_ids = load_all_existing_lead_ids()
+    combo = 0
 
-    # Resume from saved position
-    for si in range(progress['search_index'], len(SEARCHES)):
-        start_li = progress['location_index'] if si == progress['search_index'] else 0
+    for niche_key, niche in NICHES.items():
+        for ti, term in enumerate(niche['terms']):
+            for li, location in enumerate(LOCATIONS):
+                combo += 1
+                print(f"\n>>> [{combo}/{total_combos}] {niche['label']}: {term} @ {location}")
+                save_progress(niche_key, ti, li)
 
-        for li in range(start_li, len(LOCATIONS)):
-            search = SEARCHES[si]
-            location = LOCATIONS[li]
+                _, new_count = scrape_search(niche_key, term, niche["label"], location, existing_ids)
+                total_new += new_count
+                existing_ids = load_all_existing_lead_ids()
 
-            save_progress(si, li, 0)
-            _, new_count = scrape_search(search["term"], search["label"], location, existing_ids)
-            total_new += new_count
-            existing_ids = load_all_existing_lead_ids()
+                if combo < total_combos:
+                    delay = random.uniform(20, 40)
+                    time.sleep(delay)
 
-            if li < len(LOCATIONS) - 1 or si < len(SEARCHES) - 1:
-                delay = random.uniform(20, 40)
-                time.sleep(delay)
-
-    print(f"\nResume complete! Total new leads: {total_new}")
+    print(f"\n{'='*70}")
+    print(f"ALL NICHES COMPLETE!")
+    print(f"Total new leads: {total_new}")
+    print(f"{'='*70}")
 
 
 # ============================================================================
-#                           MERGE & EXPORT UTILITIES
+#                           UTILITIES
 # ============================================================================
 
 def merge_all_files():
-    """Merge all scraped files into one master file"""
+    """Merge all files into master list"""
+    import glob
     ensure_output_dir()
 
-    import glob
-    files = glob.glob(os.path.join(OUTPUT_DIR, "yp_b2b_*.xlsx"))
+    files = glob.glob(os.path.join(OUTPUT_DIR, "yp_*.xlsx"))
+    files = [f for f in files if "MERGED" not in f and "EMAILS" not in f]
 
     if not files:
         print("No files to merge!")
@@ -963,64 +925,76 @@ def merge_all_files():
         print("No leads found!")
         return None
 
-    # Deduplicate by company name + phone
+    # Dedupe
     seen = set()
-    unique_leads = []
+    unique = []
     for lead in all_leads:
-        key = generate_lead_id(lead.get("Company Name", ""), lead.get("Phone Number", ""))
+        key = generate_lead_id(str(lead.get("Company Name", "")), str(lead.get("Phone Number", "")))
         if key not in seen:
             seen.add(key)
-            unique_leads.append(lead)
+            unique.append(lead)
 
-    # Renumber
-    for i, lead in enumerate(unique_leads, 1):
+    for i, lead in enumerate(unique, 1):
         lead["#"] = i
 
-    # Save
-    output_path = os.path.join(OUTPUT_DIR, "yp_b2b_ALL_LEADS_MERGED.xlsx")
-    df = pd.DataFrame(unique_leads)
+    output_path = os.path.join(OUTPUT_DIR, "ALL_LEADS_MERGED.xlsx")
+    df = pd.DataFrame(unique)
     df.to_excel(output_path, index=False)
     add_checkboxes(output_path)
 
-    email_count = sum(1 for lead in unique_leads if lead.get("Email Address"))
+    email_count = sum(1 for l in unique if l.get("Email Address"))
+    website_count = sum(1 for l in unique if l.get("Has Website") == "Yes")
 
     print(f"\n{'='*70}")
     print(f"MERGE COMPLETE!")
     print(f"Files merged: {len(files)}")
-    print(f"Total unique leads: {len(unique_leads)}")
+    print(f"Total unique leads: {len(unique)}")
     print(f"With emails: {email_count}")
+    print(f"With websites: {website_count}")
     print(f"Saved to: {output_path}")
     print(f"{'='*70}")
 
     return df
 
 
-def export_with_emails_only():
-    """Export only leads that have emails"""
-    merged_path = os.path.join(OUTPUT_DIR, "yp_b2b_ALL_LEADS_MERGED.xlsx")
+def export_hot_leads():
+    """Export leads that have BOTH email AND website (hottest leads)"""
+    merged_path = os.path.join(OUTPUT_DIR, "ALL_LEADS_MERGED.xlsx")
 
     if not os.path.exists(merged_path):
         print("Run merge_all_files() first!")
         return None
 
     df = pd.read_excel(merged_path)
-    df_emails = df[df["Email Address"].notna() & (df["Email Address"] != "")]
 
-    # Renumber
-    df_emails = df_emails.copy()
-    df_emails["#"] = range(1, len(df_emails) + 1)
+    # Hot leads: have email
+    hot = df[df["Email Address"].notna() & (df["Email Address"] != "")]
+    hot = hot.copy()
+    hot["#"] = range(1, len(hot) + 1)
 
-    output_path = os.path.join(OUTPUT_DIR, "yp_b2b_LEADS_WITH_EMAILS.xlsx")
-    df_emails.to_excel(output_path, index=False)
+    output_path = os.path.join(OUTPUT_DIR, "HOT_LEADS_WITH_EMAILS.xlsx")
+    hot.to_excel(output_path, index=False)
     add_checkboxes(output_path)
 
-    print(f"Exported {len(df_emails)} leads with emails to: {output_path}")
-    return df_emails
+    print(f"Exported {len(hot)} hot leads (with emails) to: {output_path}")
+
+    # Also export leads WITHOUT websites (need your services most!)
+    no_website = df[df["Has Website"] == "No"]
+    no_website = no_website.copy()
+    no_website["#"] = range(1, len(no_website) + 1)
+
+    output_path2 = os.path.join(OUTPUT_DIR, "LEADS_NO_WEBSITE.xlsx")
+    no_website.to_excel(output_path2, index=False)
+    add_checkboxes(output_path2)
+
+    print(f"Exported {len(no_website)} leads WITHOUT websites to: {output_path2}")
+
+    return hot
 
 
-def export_by_industry():
-    """Export leads grouped by industry type"""
-    merged_path = os.path.join(OUTPUT_DIR, "yp_b2b_ALL_LEADS_MERGED.xlsx")
+def export_by_niche():
+    """Export by niche type"""
+    merged_path = os.path.join(OUTPUT_DIR, "ALL_LEADS_MERGED.xlsx")
 
     if not os.path.exists(merged_path):
         print("Run merge_all_files() first!")
@@ -1028,21 +1002,22 @@ def export_by_industry():
 
     df = pd.read_excel(merged_path)
 
-    for industry in df["Industry"].unique():
-        industry_df = df[df["Industry"] == industry].copy()
-        industry_df["#"] = range(1, len(industry_df) + 1)
+    for niche in df["Niche"].unique():
+        niche_df = df[df["Niche"] == niche].copy()
+        niche_df["#"] = range(1, len(niche_df) + 1)
 
-        safe_name = industry.replace("/", "-").replace(" ", "_").lower()
-        output_path = os.path.join(OUTPUT_DIR, f"yp_b2b_by_industry_{safe_name}.xlsx")
-        industry_df.to_excel(output_path, index=False)
+        safe_name = niche.replace("/", "-").replace(" ", "_").lower()
+        output_path = os.path.join(OUTPUT_DIR, f"LEADS_{safe_name}.xlsx")
+        niche_df.to_excel(output_path, index=False)
         add_checkboxes(output_path)
 
-        print(f"  {industry}: {len(industry_df)} leads -> {output_path}")
+        email_ct = niche_df["Email Address"].notna().sum()
+        print(f"  {niche}: {len(niche_df)} leads ({email_ct} with email) -> {output_path}")
 
 
 def print_stats():
-    """Print statistics about collected leads"""
-    merged_path = os.path.join(OUTPUT_DIR, "yp_b2b_ALL_LEADS_MERGED.xlsx")
+    """Show statistics"""
+    merged_path = os.path.join(OUTPUT_DIR, "ALL_LEADS_MERGED.xlsx")
 
     if not os.path.exists(merged_path):
         print("Run merge_all_files() first!")
@@ -1055,63 +1030,51 @@ def print_stats():
     print(f"{'='*70}")
     print(f"Total leads: {len(df)}")
     print(f"With emails: {df['Email Address'].notna().sum()}")
-    print(f"With websites: {df['Website URL'].notna().sum()}")
-    print(f"With phones: {df['Phone Number'].notna().sum()}")
-    print(f"\nBy Industry:")
-    print(df["Industry"].value_counts().to_string())
+    print(f"With websites: {(df['Has Website'] == 'Yes').sum()}")
+    print(f"WITHOUT websites: {(df['Has Website'] == 'No').sum()} <- BEST PROSPECTS!")
+    print(f"\nBy Niche:")
+    for niche in df["Niche"].unique():
+        niche_df = df[df["Niche"] == niche]
+        emails = niche_df["Email Address"].notna().sum()
+        no_web = (niche_df["Has Website"] == "No").sum()
+        print(f"  {niche}: {len(niche_df)} total, {emails} emails, {no_web} no website")
     print(f"{'='*70}")
 
 
+def print_niches():
+    """Show available niches and their search terms"""
+    print(f"\n{'='*70}")
+    print("AVAILABLE NICHES")
+    print(f"{'='*70}")
+    for key, niche in NICHES.items():
+        print(f"\n{key}: {niche['label']}")
+        print(f"  Pitch: {niche['pitch']}")
+        print(f"  Terms ({len(niche['terms'])}):")
+        for i, term in enumerate(niche['terms']):
+            print(f"    [{i}] {term}")
+    print(f"\n{'='*70}")
+
+
 # ============================================================================
-#                           MAIN ENTRY POINT
+#                           MAIN
 # ============================================================================
 
 if __name__ == "__main__":
     print(f"\n{'='*70}")
-    print("B2B WHOLESALER/WAREHOUSE YELLOW PAGES SCRAPER")
+    print("B2B SUPPLIER LEAD SCRAPER")
+    print("Focused: Janitorial | Safety | Promo | Uniforms")
     print(f"{'='*70}")
     print(f"Mode: {MODE}")
-    print(f"Fetch emails: {FETCH_EMAILS}")
-    print(f"Headless: {HEADLESS}")
-    print(f"Output directory: {OUTPUT_DIR}")
+    print(f"Current Niche: {CURRENT_NICHE}")
+    print(f"Output: {OUTPUT_DIR}")
     print(f"{'='*70}\n")
 
     if MODE == "single":
         run_single_search()
-    elif MODE == "batch":
-        run_batch_search()
+    elif MODE == "niche":
+        run_niche_search()
     elif MODE == "all":
-        run_all_searches()
-    elif MODE == "resume":
-        resume_scrape()
+        run_all_niches()
     else:
         print(f"Unknown mode: {MODE}")
-        print("Valid modes: single, batch, all, resume")
-
-
-# ============================================================================
-#                    JUPYTER NOTEBOOK CELLS (copy these)
-# ============================================================================
-"""
-# === CELL 1: Run scraper ===
-# Set MODE above, then run:
-# (Change CURRENT_SEARCH_INDEX and CURRENT_LOCATION_INDEX for single mode)
-
-%run yp_b2b_warehouse_scraper.py
-
-# === CELL 2: Merge all files ===
-from yp_b2b_warehouse_scraper import merge_all_files
-df = merge_all_files()
-
-# === CELL 3: Export emails only ===
-from yp_b2b_warehouse_scraper import export_with_emails_only
-df_emails = export_with_emails_only()
-
-# === CELL 4: View stats ===
-from yp_b2b_warehouse_scraper import print_stats
-print_stats()
-
-# === CELL 5: Export by industry ===
-from yp_b2b_warehouse_scraper import export_by_industry
-export_by_industry()
-"""
+        print("Valid: single, niche, all")
