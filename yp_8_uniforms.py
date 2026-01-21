@@ -1,9 +1,25 @@
-# Uniform/Workwear Distributors Scraper
-# Pitch: "Company accounts with logo/embroidery options and reordering"
-# FILTERS: Only businesses with real websites (no blank, localsearch, yellowpages URLs)
-# Copy this entire file into a Jupyter cell and run
+"""
+Uniform/Workwear Distributors Yellow Pages Scraper
+===================================================
+Target: Uniform/workwear distributors that need custom web apps for:
+- Company accounts with logo/embroidery options
+- Recurring order management
+- Size/style configurators
+- Employee uniform portals
 
-import time, re, random, os, json, hashlib
+Pitch: "Company accounts with logo/embroidery options and reordering"
+
+FILTER: Only businesses with REAL websites (no blank, localsearch, yellowpages URLs)
+        Businesses without real websites likely don't value custom web development.
+"""
+
+import time
+import re
+import random
+import os
+import json
+import hashlib
+import glob
 from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -17,9 +33,22 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.worksheet.datavalidation import DataValidation
 
-# ============== CONFIG ==============
+# ============================================================================
+#                              CONFIGURATION
+# ============================================================================
+
+# === MODE: Choose how to run ===
+# "single"    - Run one search term + one location
+# "batch"     - Run one search term across ALL locations
+# "all"       - Run all search terms across all locations (comprehensive)
+MODE = "single"
+
+# === NICHE SETTINGS ===
 NICHE_KEY = "uniforms"
 NICHE_LABEL = "Uniform/Workwear Distributor"
+NICHE_PITCH = "Company accounts with logo/embroidery options and reordering"
+
+# === UNIFORM/WORKWEAR SEARCH TERMS ===
 SEARCH_TERMS = [
     "uniforms",
     "uniform-supply",
@@ -33,239 +62,918 @@ SEARCH_TERMS = [
     "safety-clothing",
 ]
 
+# === CURRENT SELECTION (for "single" mode) ===
+CURRENT_TERM_INDEX = 0        # Which term (0-9)
+CURRENT_LOCATION_INDEX = 0    # Which location (0-52)
+
+# === LOCATIONS ===
 LOCATIONS = [
-    "queens-ny", "brooklyn-ny", "bronx-ny", "staten-island-ny",
-    "long-island-city-ny", "maspeth-ny", "jamaica-ny", "college-point-ny",
-    "sunset-park-brooklyn-ny", "red-hook-brooklyn-ny", "east-new-york-brooklyn-ny",
-    "hunts-point-bronx-ny", "port-morris-bronx-ny", "south-bronx-ny",
-    "long-island-ny", "nassau-county-ny", "suffolk-county-ny", "hauppauge-ny",
-    "farmingdale-ny", "hicksville-ny", "westbury-ny",
-    "westchester-county-ny", "yonkers-ny", "white-plains-ny",
-    "newark-nj", "jersey-city-nj", "elizabeth-nj", "edison-nj",
-    "paterson-nj", "clifton-nj", "union-nj", "secaucus-nj", "kearny-nj",
-    "linden-nj", "perth-amboy-nj", "new-brunswick-nj",
-    "middlesex-county-nj", "bergen-county-nj", "essex-county-nj",
-    "stamford-ct", "bridgeport-ct", "new-haven-ct", "hartford-ct", "norwalk-ct",
+    # NYC Boroughs (industrial areas)
+    "queens-ny",
+    "brooklyn-ny",
+    "bronx-ny",
+    "staten-island-ny",
+
+    # Queens industrial
+    "long-island-city-ny",
+    "maspeth-ny",
+    "jamaica-ny",
+    "college-point-ny",
+
+    # Brooklyn industrial
+    "sunset-park-brooklyn-ny",
+    "red-hook-brooklyn-ny",
+    "east-new-york-brooklyn-ny",
+
+    # Bronx industrial
+    "hunts-point-bronx-ny",
+    "port-morris-bronx-ny",
+    "south-bronx-ny",
+
+    # Long Island
+    "long-island-ny",
+    "nassau-county-ny",
+    "suffolk-county-ny",
+    "hauppauge-ny",
+    "farmingdale-ny",
+    "hicksville-ny",
+    "westbury-ny",
+
+    # Westchester/Hudson Valley
+    "westchester-county-ny",
+    "yonkers-ny",
+    "white-plains-ny",
+    "mount-vernon-ny",
+
+    # New Jersey
+    "newark-nj",
+    "jersey-city-nj",
+    "elizabeth-nj",
+    "edison-nj",
+    "paterson-nj",
+    "clifton-nj",
+    "passaic-nj",
+    "union-nj",
+    "secaucus-nj",
+    "kearny-nj",
+    "linden-nj",
+    "perth-amboy-nj",
+    "new-brunswick-nj",
+    "middlesex-county-nj",
+    "bergen-county-nj",
+    "essex-county-nj",
+    "hudson-county-nj",
+
+    # Connecticut
+    "stamford-ct",
+    "bridgeport-ct",
+    "new-haven-ct",
+    "hartford-ct",
+    "waterbury-ct",
+    "norwalk-ct",
+    "fairfield-county-ct",
 ]
 
-CURRENT_TERM_INDEX = 0
-CURRENT_LOCATION_INDEX = 0
-RUN_ALL = True
-
-OUTPUT_DIR = "exports_uniforms"
+# === PAGINATION ===
+START_PAGE = 1
 MAX_PAGES = 5
+
+# === OUTPUT ===
+OUTPUT_DIR = f"exports_{NICHE_KEY}"
+PROGRESS_FILE = f"scrape_progress_{NICHE_KEY}.json"
+
+# === SCRAPING SETTINGS ===
 FETCH_EMAILS = True
+DEBUG = False
 HEADLESS = False
-MIN_DELAY, MAX_DELAY = 4, 8
-PAGE_DELAY, LISTING_DELAY = 12, 3
+MIN_DELAY = 4
+MAX_DELAY = 8
+PAGE_DELAY = 12
+LISTING_DELAY = 3
+RESTART_DRIVER_EACH_PAGE = True
+MAX_RETRIES = 3
 
+# === USER AGENTS ===
 USER_AGENTS = [
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.2 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0",
 ]
-EMAIL_BLACKLIST = ['example.com','domain.com','sentry.io','schema.org','wixpress','googleapis','yellowpages','.png','.jpg','.css','.js']
 
-# ============== WEBSITE FILTER ==============
+# === WEBSITE URL FILTER ===
+INVALID_WEBSITE_PATTERNS = [
+    'localsearch.com',
+    'yellowpages.com',
+    'yp.com',
+    'superpages.com',
+    'whitepages.com',
+    'manta.com',
+    'yelp.com',
+]
+
+# ============================================================================
+#                          WEBSITE URL FILTER
+# ============================================================================
+
 def is_valid_website(url):
-    """Filter out blank, localsearch, and yellowpages URLs - we only want real business websites"""
-    if not url or not url.strip():
+    """Filter out blank, localsearch, yellowpages URLs, etc."""
+    if not url or not url.strip() or url == "N/A":
         return False
     url_lower = url.lower().strip()
-    invalid_patterns = [
-        'localsearch.com',
-        'yellowpages.com',
-        'yp.com',
-        'superpages.com',
-        'whitepages.com',
-        'manta.com',
-        'yelp.com',
-    ]
-    return not any(pattern in url_lower for pattern in invalid_patterns)
+    return not any(pattern in url_lower for pattern in INVALID_WEBSITE_PATTERNS)
 
-# ============== HELPERS ==============
-def ensure_dir():
-    if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR)
+# ============================================================================
+#                              HELPER FUNCTIONS
+# ============================================================================
 
-def gen_id(name, phone):
-    return hashlib.md5(f"{str(name).lower().strip()}|{str(phone).strip()}".encode()).hexdigest()[:12]
+def ensure_output_dir():
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+        print(f"Created output directory: {OUTPUT_DIR}")
 
-def load_all_ids():
-    ids = set()
+
+def get_output_filename(search_term, location):
+    return os.path.join(OUTPUT_DIR, f"yp_{NICHE_KEY}_{location}_{search_term}.xlsx")
+
+
+def generate_lead_id(company_name, phone):
+    key = f"{str(company_name).lower().strip()}|{str(phone).strip()}"
+    return hashlib.md5(key.encode()).hexdigest()[:12]
+
+
+def load_existing_leads(filepath):
+    if os.path.exists(filepath):
+        try:
+            df = pd.read_excel(filepath)
+            return set(
+                generate_lead_id(str(row.get("Company Name", "")), str(row.get("Phone Number", "")))
+                for _, row in df.iterrows()
+            )
+        except:
+            return set()
+    return set()
+
+
+def load_all_existing_lead_ids():
+    all_ids = set()
     if os.path.exists(OUTPUT_DIR):
-        for f in os.listdir(OUTPUT_DIR):
-            if f.endswith(".xlsx"):
-                try:
-                    df = pd.read_excel(os.path.join(OUTPUT_DIR, f))
-                    ids.update(gen_id(r.get("Company Name",""), r.get("Phone Number","")) for _,r in df.iterrows())
-                except: pass
-    return ids
+        for filename in os.listdir(OUTPUT_DIR):
+            if filename.endswith(".xlsx"):
+                filepath = os.path.join(OUTPUT_DIR, filename)
+                all_ids.update(load_existing_leads(filepath))
+    print(f"Loaded {len(all_ids)} existing lead IDs for deduplication")
+    return all_ids
+
+
+def save_progress(term_idx, location_idx, status="in_progress"):
+    progress = {
+        "niche": NICHE_KEY,
+        "term_index": term_idx,
+        "location_index": location_idx,
+        "status": status,
+        "timestamp": datetime.now().isoformat()
+    }
+    with open(PROGRESS_FILE, "w") as f:
+        json.dump(progress, f, indent=2)
+
+
+def load_progress():
+    if os.path.exists(PROGRESS_FILE):
+        with open(PROGRESS_FILE, "r") as f:
+            return json.load(f)
+    return None
+
 
 def create_driver():
-    opts = Options()
-    if HEADLESS: opts.add_argument("--headless=new")
-    opts.add_argument("--no-sandbox"); opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-gpu"); opts.add_argument("--window-size=1920,1080")
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument(f"user-agent={random.choice(USER_AGENTS)}")
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    opts.add_experimental_option('useAutomationExtension', False)
-    d = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
-    d.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    return d
+    options = Options()
 
-def valid_email(e):
-    return e and '@' in e and not any(x in e.lower() for x in EMAIL_BLACKLIST)
+    if HEADLESS:
+        options.add_argument("--headless=new")
 
-def get_email_from_site(driver, url):
-    if not url or not is_valid_website(url): return ""
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+
+    user_agent = random.choice(USER_AGENTS)
+    options.add_argument(f"user-agent={user_agent}")
+
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
+    return driver
+
+
+def random_delay(min_sec=None, max_sec=None):
+    min_sec = min_sec or MIN_DELAY
+    max_sec = max_sec or MAX_DELAY
+    delay = random.uniform(min_sec, max_sec)
+    time.sleep(delay)
+    return delay
+
+
+# ============================================================================
+#                           EMAIL EXTRACTION
+# ============================================================================
+
+EMAIL_BLACKLIST = [
+    'example.com', 'domain.com', 'email.com', 'yoursite', 'yourdomain',
+    'sentry.io', 'schema.org', 'json', 'wixpress', 'wix.com',
+    'googleapis', 'google.com', 'facebook', 'twitter', 'instagram',
+    '.png', '.jpg', '.gif', '.svg', '.css', '.js',
+    'yellowpages', 'yp.com', 'placeholder', 'test.com',
+    'wordpress', 'squarespace', 'shopify', 'godaddy', 'wufoo'
+]
+
+
+def is_valid_email(email):
+    if not email or '@' not in email:
+        return False
+    email_lower = email.lower()
+    return not any(x in email_lower for x in EMAIL_BLACKLIST)
+
+
+def extract_email_from_website(driver, website_url, timeout=15):
+    if not website_url or not is_valid_website(website_url):
+        return ""
+
     try:
-        if not url.startswith("http"): url = "https://" + url
-        driver.set_page_load_timeout(15)
-        try: driver.get(url)
-        except: return ""
-        time.sleep(2); src = driver.page_source
-        m = re.search(r'href=["\']mailto:([^"\'<>?\s]+)', src, re.IGNORECASE)
-        if m and valid_email(m.group(1)): return m.group(1).strip()
-        for e in re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', src):
-            if valid_email(e): return e
-        for p in ['/contact','/contact-us','/about']:
+        if not website_url.startswith("http"):
+            website_url = "https://" + website_url
+
+        random_delay(1, 2)
+        driver.set_page_load_timeout(timeout)
+
+        try:
+            driver.get(website_url)
+        except:
+            return ""
+
+        time.sleep(2)
+        page_source = driver.page_source
+
+        if any(x in driver.title.lower() for x in ["404", "not found", "error", "denied"]):
+            return ""
+
+        mailto_match = re.search(r'href=["\']mailto:([^"\'<>?\s]+)', page_source, re.IGNORECASE)
+        if mailto_match:
+            email = mailto_match.group(1).strip()
+            if is_valid_email(email):
+                return email
+
+        email_matches = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', page_source)
+        for email in email_matches:
+            if is_valid_email(email):
+                return email
+
+        base_url = website_url.rstrip('/')
+        contact_paths = ['/contact', '/contact-us', '/about', '/about-us', '/contactus']
+
+        for path in contact_paths:
             try:
-                driver.get(url.rstrip('/') + p); time.sleep(1.5); src = driver.page_source
-                m = re.search(r'href=["\']mailto:([^"\'<>?\s]+)', src, re.IGNORECASE)
-                if m and valid_email(m.group(1)): return m.group(1).strip()
-                for e in re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', src):
-                    if valid_email(e): return e
-            except: pass
-    except: pass
+                driver.get(base_url + path)
+                time.sleep(1.5)
+                contact_source = driver.page_source
+
+                mailto_match = re.search(r'href=["\']mailto:([^"\'<>?\s]+)', contact_source, re.IGNORECASE)
+                if mailto_match:
+                    email = mailto_match.group(1).strip()
+                    if is_valid_email(email):
+                        return email
+
+                email_matches = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', contact_source)
+                for email in email_matches:
+                    if is_valid_email(email):
+                        return email
+            except:
+                continue
+
+    except Exception as e:
+        if DEBUG:
+            print(f" [website error: {e}]", end="")
+
     return ""
 
-def get_email(driver, detail_url, website=""):
+
+def extract_email_from_detail(driver, detail_url, website_url="", debug_save=False):
     try:
-        time.sleep(random.uniform(LISTING_DELAY, LISTING_DELAY+2))
-        driver.get(detail_url); time.sleep(2); src = driver.page_source
-        if "blocked" in src.lower() or ("cloudflare" in src.lower() and "ray id" in src.lower()):
-            if website and is_valid_website(website): return get_email_from_site(driver, website)
+        random_delay(LISTING_DELAY, LISTING_DELAY + 2)
+        driver.get(detail_url)
+
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".business-info, .sales-info, #main-content, #cf-wrapper"))
+            )
+        except:
+            pass
+
+        time.sleep(2)
+        page_source = driver.page_source
+
+        is_blocked = (
+            "you have been blocked" in page_source.lower() or
+            ("cloudflare" in page_source.lower() and "ray id" in page_source.lower())
+        )
+
+        if is_blocked:
+            if website_url and is_valid_website(website_url):
+                print(" [blocked, trying website]", end="")
+                email = extract_email_from_website(driver, website_url)
+                if email:
+                    return email
             return "__BLOCKED__"
-        driver.execute_script("window.scrollTo(0,800)"); time.sleep(1); src = driver.page_source
-        m = re.search(r'href=["\']mailto:([^"\'<>?\s]+)', src, re.IGNORECASE)
-        if m and valid_email(m.group(1)): return m.group(1).strip()
-        for e in re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', src):
-            if valid_email(e): return e
-        if website and is_valid_website(website): return get_email_from_site(driver, website)
-    except: pass
+
+        if debug_save:
+            with open(os.path.join(OUTPUT_DIR, "debug_page.html"), "w", encoding="utf-8") as f:
+                f.write(page_source)
+
+        driver.execute_script("window.scrollTo(0, 800);")
+        time.sleep(1)
+        page_source = driver.page_source
+
+        mailto_match = re.search(r'href=["\']mailto:([^"\'<>?\s]+)', page_source, re.IGNORECASE)
+        if mailto_match:
+            email = mailto_match.group(1).strip()
+            if is_valid_email(email):
+                return email
+
+        try:
+            email_elements = driver.find_elements(By.CSS_SELECTOR, "a.email-business, a[class*='email']")
+            for el in email_elements:
+                href = el.get_attribute("href") or ""
+                if "mailto:" in href:
+                    email = href.replace("mailto:", "").split("?")[0].strip()
+                    if is_valid_email(email):
+                        return email
+        except:
+            pass
+
+        try:
+            mailto_links = driver.find_elements(By.CSS_SELECTOR, "a[href*='mailto:']")
+            for link in mailto_links:
+                href = link.get_attribute("href") or ""
+                if "mailto:" in href:
+                    email = href.replace("mailto:", "").split("?")[0].strip()
+                    if is_valid_email(email):
+                        return email
+        except:
+            pass
+
+        soup = BeautifulSoup(page_source, "html.parser")
+        for link in soup.find_all("a", href=True):
+            href = link["href"]
+            if "mailto:" in href:
+                email = href.replace("mailto:", "").split("?")[0].strip()
+                if is_valid_email(email):
+                    return email
+
+        email_matches = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', page_source)
+        for email in email_matches:
+            if is_valid_email(email):
+                return email
+
+        if website_url and is_valid_website(website_url):
+            print(" [trying website]", end="")
+            email = extract_email_from_website(driver, website_url)
+            if email:
+                return email
+
+    except Exception as e:
+        if DEBUG:
+            print(f" [error: {e}]", end="")
+
     return ""
 
-def parse_listing(lst):
-    """Parse listing - returns None if no valid website (filtered out)"""
-    try:
-        nm = lst.select_one(".business-name span") or lst.select_one(".business-name")
-        name = nm.text.strip() if nm else ""
-        if not name: return None
-        web_el = lst.select_one(".track-visit-website")
-        web = web_el["href"] if web_el else ""
-        if not is_valid_website(web): return None
-        ph = lst.select_one(".phones"); phone = ph.text.strip() if ph else ""
-        st = lst.select_one(".street-address"); loc = lst.select_one(".locality")
-        addr = " ".join(filter(None, [st.text.strip() if st else "", loc.text.strip() if loc else ""]))
-        det = lst.select_one(".business-name"); link = "https://www.yellowpages.com" + det["href"] if det and det.get("href") else ""
-        cat = lst.select_one(".categories"); cats = cat.text.strip() if cat else ""
-        return {"#":None,"Company Name":name,"Niche":NICHE_LABEL,"Category":cats,
-                "Email":"","Phone":phone,"Website":web,"Address":addr,"Date Added":datetime.now().strftime("%m/%d/%y"),
-                "Source":link,"Status":"","Notes":"","_id":gen_id(name,phone)}
-    except: return None
 
-def get_page_listings(driver):
-    driver.execute_script("window.scrollTo(0,document.body.scrollHeight)"); time.sleep(2)
-    try: WebDriverWait(driver,10).until(EC.presence_of_element_located((By.CSS_SELECTOR,".result")))
-    except: return []
-    data = []
-    for el in driver.find_elements(By.CSS_SELECTOR, ".result"):
+# ============================================================================
+#                           LISTING PARSING
+# ============================================================================
+
+def parse_listing(listing):
+    """Parse listing - RETURNS NONE IF NO VALID WEBSITE"""
+    try:
+        name_el = listing.select_one(".business-name span")
+        if not name_el:
+            name_el = listing.select_one(".business-name")
+        company = name_el.text.strip() if name_el else ""
+
+        if not company:
+            return None
+
+        website_el = listing.select_one(".track-visit-website")
+        website = website_el["href"] if website_el else ""
+
+        if not is_valid_website(website):
+            return None
+
+        phone_el = listing.select_one(".phones")
+        phone = phone_el.text.strip() if phone_el else ""
+
+        street = listing.select_one(".street-address")
+        locality = listing.select_one(".locality")
+        address = " ".join(filter(None, [
+            street.text.strip() if street else "",
+            locality.text.strip() if locality else ""
+        ]))
+
+        detail_el = listing.select_one(".business-name")
+        detail_link = ""
+        if detail_el and detail_el.get("href"):
+            detail_link = "https://www.yellowpages.com" + detail_el["href"]
+
+        categories_el = listing.select_one(".categories")
+        categories = categories_el.text.strip() if categories_el else ""
+
+        return {
+            "#": None,
+            "Company Name": company,
+            "Niche": NICHE_LABEL,
+            "Category": categories,
+            "Has Website": "Yes",
+            "Contact Name": "",
+            "Email Address": "",
+            "Phone Number": phone,
+            "Website URL": website,
+            "Address": address,
+            "Date Added": datetime.now().strftime("%m/%d/%y"),
+            "Date Contacted": "",
+            "Source": detail_link,
+            "Notes": "",
+            "Status": "",
+            "_lead_id": generate_lead_id(company, phone)
+        }
+    except Exception as e:
+        if DEBUG:
+            print(f"  Parse error: {e}")
+        return None
+
+
+def get_listings_from_page(driver):
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    time.sleep(2)
+
+    try:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".result, .search-results"))
+        )
+    except:
+        return []
+
+    listings = driver.find_elements(By.CSS_SELECTOR, ".result")
+    page_data = []
+
+    for listing in listings:
         try:
-            p = parse_listing(BeautifulSoup(el.get_attribute("outerHTML"), "html.parser"))
-            if p: data.append(p)
-        except: pass
-    return data
+            html = listing.get_attribute("outerHTML")
+            soup = BeautifulSoup(html, "html.parser")
+            parsed = parse_listing(soup)
+            if parsed:
+                page_data.append(parsed)
+        except:
+            continue
 
-def save_xlsx(leads, path):
-    if not leads: return
-    clean = [{k:v for k,v in l.items() if not k.startswith("_")} for l in leads if is_valid_website(l.get("Website",""))]
-    if not clean: return
-    for i,l in enumerate(clean,1): l["#"] = i
-    df = pd.DataFrame(clean); df.to_excel(path, index=False)
+    return page_data
+
+
+# ============================================================================
+#                           EXCEL OUTPUT
+# ============================================================================
+
+def add_checkboxes(filepath):
     try:
-        wb = load_workbook(path); ws = wb.active
-        dv = DataValidation(type="list", formula1='"Not Contacted,Contacted,Interested,Not Interested,Closed Won,Closed Lost"')
-        ws.add_data_validation(dv)
-        for c in ws[1]:
-            if c.value == "Status":
-                for r in range(2, ws.max_row+1):
-                    cell = ws.cell(r, c.column)
-                    if not cell.value: cell.value = "Not Contacted"
-                    dv.add(cell)
-        wb.save(path)
-    except: pass
+        wb = load_workbook(filepath)
+        ws = wb.active
 
-def scrape(term, location, existing_ids):
-    url = f"https://www.yellowpages.com/{location}/{term}"
-    outfile = os.path.join(OUTPUT_DIR, f"yp_{NICHE_KEY}_{location}_{term}.xlsx")
-    existing = []
-    if os.path.exists(outfile):
+        status_validation = DataValidation(
+            type="list",
+            formula1='"Not Contacted,Contacted,Interested,Not Interested,Closed Won,Closed Lost"',
+            allow_blank=True
+        )
+        ws.add_data_validation(status_validation)
+
+        headers = {cell.value: cell.column for cell in ws[1]}
+
+        if "Status" in headers:
+            col_idx = headers["Status"]
+            for row in range(2, ws.max_row + 1):
+                cell = ws.cell(row=row, column=col_idx)
+                if not cell.value:
+                    cell.value = "Not Contacted"
+                status_validation.add(cell)
+
+        wb.save(filepath)
+    except Exception as e:
+        print(f"  Warning: Could not add dropdowns: {e}")
+
+
+def save_leads_to_excel(leads, filepath):
+    if not leads:
+        return
+
+    valid_leads = [l for l in leads if is_valid_website(l.get("Website URL", ""))]
+
+    if not valid_leads:
+        return
+
+    clean_leads = []
+    for lead in valid_leads:
+        clean_lead = {k: v for k, v in lead.items() if not k.startswith("_")}
+        clean_leads.append(clean_lead)
+
+    for i, lead in enumerate(clean_leads, 1):
+        lead["#"] = i
+
+    df = pd.DataFrame(clean_leads)
+    df.to_excel(filepath, index=False)
+    add_checkboxes(filepath)
+
+
+# ============================================================================
+#                           MAIN SCRAPER
+# ============================================================================
+
+def scrape_search(search_term, location, existing_ids=None):
+    existing_ids = existing_ids or set()
+    base_url = f"https://www.yellowpages.com/{location}/{search_term}"
+    output_file = get_output_filename(search_term, location)
+
+    existing_file_leads = []
+    if os.path.exists(output_file):
         try:
-            df = pd.read_excel(outfile); existing = df.to_dict('records')
-            existing = [l for l in existing if is_valid_website(l.get("Website",""))]
-            for l in existing: l["_id"] = gen_id(l.get("Company Name",""), l.get("Phone",""))
-        except: pass
-    print(f"\n{'='*60}\n{NICHE_LABEL}: {term} @ {location}\n{'='*60}")
-    print(f"Filter: Only businesses with real websites (no blank/localsearch/yellowpages)")
-    driver = create_driver(); leads = list(existing); local_ids = {l["_id"] for l in leads}; new_ct = 0; blocks = 0
+            df = pd.read_excel(output_file)
+            existing_file_leads = df.to_dict('records')
+            existing_file_leads = [l for l in existing_file_leads if is_valid_website(l.get("Website URL", ""))]
+            for lead in existing_file_leads:
+                lead["_lead_id"] = generate_lead_id(
+                    str(lead.get("Company Name", "")),
+                    str(lead.get("Phone Number", ""))
+                )
+        except:
+            pass
+
+    print(f"\n{'='*70}")
+    print(f"SCRAPING: {NICHE_LABEL}")
+    print(f"Search Term: {search_term}")
+    print(f"Location: {location}")
+    print(f"URL: {base_url}")
+    print(f"Existing in file: {len(existing_file_leads)}")
+    print(f"FILTER: Only businesses with REAL websites")
+    print(f"{'='*70}\n")
+
+    driver = create_driver()
+    all_leads = list(existing_file_leads)
+    local_ids = {lead["_lead_id"] for lead in all_leads}
+    new_leads_count = 0
+    blocked_count = 0
+
     try:
-        for pg in range(1, MAX_PAGES+1):
-            pg_url = url if pg==1 else f"{url}?page={pg}"
-            print(f"[Page {pg}] {pg_url}")
-            try: driver.get(pg_url); time.sleep(2)
-            except: continue
-            listings = get_page_listings(driver)
-            if not listings: print("  No results with valid websites"); break
-            new_lst = [l for l in listings if l["_id"] not in existing_ids and l["_id"] not in local_ids]
-            for l in new_lst: local_ids.add(l["_id"])
-            print(f"  Found {len(listings)} with real websites, {len(new_lst)} new")
-            if not new_lst: continue
+        for page in range(START_PAGE, MAX_PAGES + 1):
+            url = base_url if page == 1 else f"{base_url}?page={page}"
+
+            print(f"[Page {page}] Loading...")
+
+            for attempt in range(MAX_RETRIES):
+                try:
+                    driver.get(url)
+                    time.sleep(2)
+                    break
+                except Exception as e:
+                    if attempt < MAX_RETRIES - 1:
+                        print(f"  Retry {attempt + 1}...")
+                        time.sleep(5)
+                    else:
+                        print(f"  Failed: {e}")
+                        continue
+
+            page_listings = get_listings_from_page(driver)
+
+            if not page_listings:
+                print(f"  No listings with real websites - end of results")
+                break
+
+            new_listings = []
+            for listing in page_listings:
+                lead_id = listing["_lead_id"]
+                if lead_id not in existing_ids and lead_id not in local_ids:
+                    new_listings.append(listing)
+                    local_ids.add(lead_id)
+
+            print(f"  Found {len(page_listings)} with real websites, {len(new_listings)} new")
+
+            if not new_listings:
+                print(f"  All duplicates - skipping")
+                if page < MAX_PAGES:
+                    time.sleep(random.uniform(PAGE_DELAY/2, PAGE_DELAY))
+                continue
+
             if FETCH_EMAILS:
-                for i,l in enumerate(new_lst):
-                    print(f"  [{i+1}/{len(new_lst)}] {l['Company Name'][:35]:35}", end="", flush=True)
-                    em = get_email(driver, l["Source"], l.get("Website",""))
-                    if em == "__BLOCKED__": print(" BLOCKED"); blocks += 1
-                    elif em: l["Email"] = em; print(f" -> {em}")
-                    else: print(" (no email)")
-                    if blocks >= 5:
-                        print("  Restarting browser..."); driver.quit(); time.sleep(5); driver = create_driver(); blocks = 0
-            leads.extend(new_lst); new_ct += len(new_lst)
-            save_xlsx(leads, outfile); print(f"  Saved {len(leads)} to {outfile}")
-            if pg < MAX_PAGES:
-                print("  Restarting browser..."); driver.quit(); time.sleep(3); driver = create_driver()
-                time.sleep(random.uniform(PAGE_DELAY, PAGE_DELAY+5))
-    except Exception as e: print(f"Error: {e}")
+                emails_found = 0
+                for i, lead in enumerate(new_listings):
+                    company_short = lead['Company Name'][:38].ljust(38)
+                    print(f"  [{i+1:2}/{len(new_listings)}] {company_short}", end="", flush=True)
+
+                    email = extract_email_from_detail(
+                        driver,
+                        lead["Source"],
+                        website_url=lead.get("Website URL", ""),
+                        debug_save=(DEBUG and page == 1 and i == 0)
+                    )
+
+                    if email == "__BLOCKED__":
+                        print(f" -> BLOCKED")
+                        blocked_count += 1
+                        if blocked_count >= 5:
+                            print("\n  Too many blocks - restarting...")
+                            try:
+                                driver.quit()
+                            except:
+                                pass
+                            time.sleep(10)
+                            driver = create_driver()
+                            blocked_count = 0
+                    elif email:
+                        lead["Email Address"] = email
+                        emails_found += 1
+                        print(f" -> {email}")
+                    else:
+                        print(f" -> (no email)")
+
+                print(f"\n  Page {page}: {emails_found}/{len(new_listings)} emails")
+
+            all_leads.extend(new_listings)
+            new_leads_count += len(new_listings)
+
+            save_leads_to_excel(all_leads, output_file)
+            print(f"  Saved {len(all_leads)} leads to {output_file}")
+
+            if page < MAX_PAGES:
+                if RESTART_DRIVER_EACH_PAGE:
+                    print(f"  Restarting browser...")
+                    try:
+                        driver.quit()
+                    except:
+                        pass
+                    time.sleep(3)
+                    driver = create_driver()
+
+                delay = random.uniform(PAGE_DELAY, PAGE_DELAY + 5)
+                print(f"  Waiting {delay:.1f}s...\n")
+                time.sleep(delay)
+
+    except Exception as e:
+        print(f"\nError: {e}")
+        if all_leads:
+            save_leads_to_excel(all_leads, output_file)
+
     finally:
-        try: driver.quit()
-        except: pass
-    print(f"Done: {new_ct} new leads (all with real websites), {len(leads)} total")
-    return leads, new_ct
+        try:
+            driver.quit()
+        except:
+            pass
 
-# ============== RUN ==============
-ensure_dir()
-all_ids = load_all_ids()
-print(f"Loaded {len(all_ids)} existing IDs")
-print(f"NOTE: Only scraping businesses with real websites (filtering out blank/localsearch/yellowpages URLs)\n")
+    email_count = sum(1 for lead in all_leads if lead.get("Email Address"))
 
-if RUN_ALL:
-    total = 0
+    print(f"\n{'='*70}")
+    print(f"COMPLETED: {search_term} in {location}")
+    print(f"New leads: {new_leads_count}")
+    print(f"Total in file: {len(all_leads)} (all with real websites)")
+    print(f"With emails: {email_count}")
+    print(f"{'='*70}")
+
+    return all_leads, new_leads_count
+
+
+# ============================================================================
+#                           RUN MODES
+# ============================================================================
+
+def run_single_search():
+    ensure_output_dir()
+    term = SEARCH_TERMS[CURRENT_TERM_INDEX]
+    location = LOCATIONS[CURRENT_LOCATION_INDEX]
+
+    print(f"\nMODE: Single Search")
+    print(f"Niche: {NICHE_LABEL}")
+    print(f"Term: {term}")
+    print(f"Location: {location}")
+    print(f"Pitch: {NICHE_PITCH}")
+
+    existing_ids = load_all_existing_lead_ids()
+    scrape_search(term, location, existing_ids)
+
+
+def run_batch_search():
+    ensure_output_dir()
+    term = SEARCH_TERMS[CURRENT_TERM_INDEX]
+
+    print(f"\nMODE: Batch Search (one term, all locations)")
+    print(f"Niche: {NICHE_LABEL}")
+    print(f"Term: {term}")
+    print(f"Locations: {len(LOCATIONS)}")
+
+    total_new = 0
+    existing_ids = load_all_existing_lead_ids()
+
+    for li, location in enumerate(LOCATIONS):
+        print(f"\n>>> [{li+1}/{len(LOCATIONS)}] {location}")
+        save_progress(CURRENT_TERM_INDEX, li)
+
+        _, new_count = scrape_search(term, location, existing_ids)
+        total_new += new_count
+        existing_ids = load_all_existing_lead_ids()
+
+        if li < len(LOCATIONS) - 1:
+            delay = random.uniform(20, 40)
+            print(f"\nWaiting {delay:.0f}s...\n")
+            time.sleep(delay)
+
+    save_progress(CURRENT_TERM_INDEX, len(LOCATIONS)-1, "completed")
+    print(f"\n{'='*70}")
+    print(f"BATCH COMPLETE!")
+    print(f"Total new leads (with real websites): {total_new}")
+    print(f"{'='*70}")
+
+
+def run_all_searches():
+    ensure_output_dir()
+    total_combos = len(SEARCH_TERMS) * len(LOCATIONS)
+
+    print(f"\nMODE: Full Scrape (all terms x all locations)")
+    print(f"Niche: {NICHE_LABEL}")
+    print(f"Terms: {len(SEARCH_TERMS)}")
+    print(f"Locations: {len(LOCATIONS)}")
+    print(f"Total combinations: {total_combos}")
+    print(f"FILTER: Only businesses with REAL websites")
+
+    total_new = 0
+    existing_ids = load_all_existing_lead_ids()
+    combo = 0
+
     for ti, term in enumerate(SEARCH_TERMS):
-        for li, loc in enumerate(LOCATIONS):
-            _, n = scrape(term, loc, all_ids)
-            total += n; all_ids = load_all_ids()
-            time.sleep(random.uniform(15, 30))
-    print(f"\n{'='*60}\nALL DONE! {total} new leads (all with real websites)\n{'='*60}")
-else:
-    scrape(SEARCH_TERMS[CURRENT_TERM_INDEX], LOCATIONS[CURRENT_LOCATION_INDEX], all_ids)
+        for li, location in enumerate(LOCATIONS):
+            combo += 1
+            print(f"\n>>> [{combo}/{total_combos}] {term} @ {location}")
+            save_progress(ti, li)
+
+            _, new_count = scrape_search(term, location, existing_ids)
+            total_new += new_count
+            existing_ids = load_all_existing_lead_ids()
+
+            if combo < total_combos:
+                delay = random.uniform(20, 40)
+                time.sleep(delay)
+
+    save_progress(len(SEARCH_TERMS)-1, len(LOCATIONS)-1, "completed")
+    print(f"\n{'='*70}")
+    print(f"FULL SCRAPE COMPLETE!")
+    print(f"Total new leads (with real websites): {total_new}")
+    print(f"{'='*70}")
+
+
+# ============================================================================
+#                           UTILITIES
+# ============================================================================
+
+def merge_all_files():
+    ensure_output_dir()
+    files = glob.glob(os.path.join(OUTPUT_DIR, f"yp_{NICHE_KEY}_*.xlsx"))
+    files = [f for f in files if "MERGED" not in f and "EMAILS" not in f and "HOT" not in f]
+
+    if not files:
+        print("No files to merge!")
+        return None
+
+    print(f"Merging {len(files)} files...")
+
+    all_leads = []
+    for f in files:
+        try:
+            df = pd.read_excel(f)
+            leads = df.to_dict('records')
+            leads = [l for l in leads if is_valid_website(l.get("Website URL", ""))]
+            all_leads.extend(leads)
+        except Exception as e:
+            print(f"  Error reading {f}: {e}")
+
+    if not all_leads:
+        print("No leads found!")
+        return None
+
+    seen = set()
+    unique = []
+    for lead in all_leads:
+        key = generate_lead_id(str(lead.get("Company Name", "")), str(lead.get("Phone Number", "")))
+        if key not in seen:
+            seen.add(key)
+            unique.append(lead)
+
+    for i, lead in enumerate(unique, 1):
+        lead["#"] = i
+
+    output_path = os.path.join(OUTPUT_DIR, f"{NICHE_KEY}_ALL_LEADS_MERGED.xlsx")
+    df = pd.DataFrame(unique)
+    df.to_excel(output_path, index=False)
+    add_checkboxes(output_path)
+
+    email_count = sum(1 for l in unique if l.get("Email Address"))
+
+    print(f"\n{'='*70}")
+    print(f"MERGE COMPLETE!")
+    print(f"Files merged: {len(files)}")
+    print(f"Total unique leads (with real websites): {len(unique)}")
+    print(f"With emails: {email_count}")
+    print(f"Saved to: {output_path}")
+    print(f"{'='*70}")
+
+    return df
+
+# Uncomment to run: merge_all_files()
+
+
+def export_hot_leads():
+    merged_path = os.path.join(OUTPUT_DIR, f"{NICHE_KEY}_ALL_LEADS_MERGED.xlsx")
+
+    if not os.path.exists(merged_path):
+        print("Run merge_all_files() first!")
+        return None
+
+    df = pd.read_excel(merged_path)
+    hot = df[df["Email Address"].notna() & (df["Email Address"] != "")]
+    hot = hot.copy()
+    hot["#"] = range(1, len(hot) + 1)
+
+    output_path = os.path.join(OUTPUT_DIR, f"{NICHE_KEY}_HOT_LEADS_WITH_EMAILS.xlsx")
+    hot.to_excel(output_path, index=False)
+    add_checkboxes(output_path)
+
+    print(f"Exported {len(hot)} hot leads (with emails) to: {output_path}")
+    return hot
+
+# Uncomment to run: export_hot_leads()
+
+
+def print_stats():
+    merged_path = os.path.join(OUTPUT_DIR, f"{NICHE_KEY}_ALL_LEADS_MERGED.xlsx")
+
+    if not os.path.exists(merged_path):
+        print("Run merge_all_files() first!")
+        return
+
+    df = pd.read_excel(merged_path)
+
+    print(f"\n{'='*70}")
+    print(f"{NICHE_LABEL.upper()} - LEAD STATISTICS")
+    print(f"{'='*70}")
+    print(f"Total leads (with real websites): {len(df)}")
+    print(f"With emails: {df['Email Address'].notna().sum()}")
+    print(f"\nBy Category:")
+    if "Category" in df.columns:
+        print(df["Category"].value_counts().head(15).to_string())
+    print(f"{'='*70}")
+
+# Uncomment to run: print_stats()
+
+
+def print_search_terms():
+    print(f"\n{'='*70}")
+    print(f"{NICHE_LABEL.upper()} - SEARCH TERMS")
+    print(f"{'='*70}")
+    print(f"Pitch: {NICHE_PITCH}")
+    print(f"\nTerms ({len(SEARCH_TERMS)}):")
+    for i, term in enumerate(SEARCH_TERMS):
+        print(f"  [{i}] {term}")
+    print(f"\nLocations: {len(LOCATIONS)}")
+    print(f"{'='*70}")
+
+# Uncomment to run: print_search_terms()
+
+
+# ============================================================================
+#                           MAIN
+# ============================================================================
+
+if __name__ == "__main__":
+    print(f"\n{'='*70}")
+    print(f"{NICHE_LABEL.upper()} - LEAD SCRAPER")
+    print(f"{'='*70}")
+    print(f"Mode: {MODE}")
+    print(f"Pitch: {NICHE_PITCH}")
+    print(f"Output: {OUTPUT_DIR}")
+    print(f"FILTER: Only businesses with REAL websites")
+    print(f"{'='*70}\n")
+
+    if MODE == "single":
+        run_single_search()
+    elif MODE == "batch":
+        run_batch_search()
+    elif MODE == "all":
+        run_all_searches()
+    else:
+        print(f"Unknown mode: {MODE}")
+        print("Valid: single, batch, all")
